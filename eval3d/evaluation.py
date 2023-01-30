@@ -178,8 +178,8 @@ class Evaluator:
         """
         Mxy = nputil.np2th(Mxy).to(device)
         N_pred, N_gt = Mxy.shape[:2]
-        min_val_fromsmp, min_idx = torch.min(Mxy, dim=1)
-        min_val, _ = torch.min(Mxy, dim=0)
+        min_val_fromsmp, min_idx = torch.min(Mxy, dim=1) # min dist for each prediction
+        min_val, _ = torch.min(Mxy, dim=0) # min dist for each GT
         mmd = min_val.mean()
         mmd_smp = min_val_fromsmp.mean()
         cov = float(min_idx.unique().view(-1).size(0)) / float(N_gt)
@@ -224,9 +224,8 @@ class Evaluator:
         )
         if sqrt:
             M = M.abs().sqrt()
-
         INFINITY = float("inf")
-        val, idx = (M + torch.diag(INFINITY * torch.ones(n0 + n1).to(Mxx))).topk(k, 0)
+        val, idx = (M + torch.diag(INFINITY * torch.ones(n0 + n1).to(Mxx))).topk(k, 0, False)
         count = torch.zeros(n0 + n1).to(Mxx)
         for i in range(0, k):
             count = count + label.index_select(0, idx[i])
