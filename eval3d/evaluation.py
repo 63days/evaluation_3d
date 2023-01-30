@@ -56,7 +56,7 @@ class Evaluator:
             self.dim_gt == self.dim_pred
         ), f"Dimensions of two sets should be the same."
     
-    def compute_all_metrics(self, gt_set=None, pred_set=None, batch_size=None, device=None, verbose=True):
+    def compute_all_metrics(self, gt_set=None, pred_set=None, batch_size=None, device=None, verbose=False, return_distance_matrix=False):
         """
         Output:
             MMD-CD
@@ -68,13 +68,13 @@ class Evaluator:
         gt_set = gt_set if gt_set is not None else self.gt_set
         pred_set = pred_set if pred_set is not None else self.pred_set
 
-        Mxy = self.compute_chamfer_distance(gt_set, pred_set, batch_size, device)
+        Mxy = self.compute_chamfer_distance(gt_set, pred_set, batch_size, device, verbose=verbose)
         if verbose:
             print("[*] Finished computing (pred, gt) distance")
-        Mxx = self.compute_chamfer_distance(gt_set, gt_set, batch_size, device)
+        Mxx = self.compute_chamfer_distance(gt_set, gt_set, batch_size, device, verbose=verbose)
         if verbose:
             print("[*] Finished computing (gt, gt) distance")
-        Myy = self.compute_chamfer_distance(pred_set, pred_set, batch_size, device)
+        Myy = self.compute_chamfer_distance(pred_set, pred_set, batch_size, device, verbose=verbose)
         if verbose:
             print("[*] Finished computing (pred, pred) distance")
         
@@ -89,9 +89,14 @@ class Evaluator:
         if verbose:
             print("1-NNA-CD:", nna_1)
 
+        if return_distance_matrix:
+            results["distance_matrix_xx"] = Mxx
+            results["distance_matrix_xy"] = Mxy
+            results["distance_matrix_yy"] = Myy
+
         return results
         
-    def compute_chamfer_distance(self, A, B, batch_size=None, device=None):
+    def compute_chamfer_distance(self, A, B, batch_size=None, device=None, verbose=False):
         """
         Input:
             A: np.ndarray or torch.Tensor [N1,M,D]
@@ -107,17 +112,23 @@ class Evaluator:
 
         compute_num_batches = lambda num: int(np.ceil(num / batch_size))
 
-        num_batches_A = compute_num_batches(N1)
         num_batches_B = compute_num_batches(N2)
         """
         d(A1,B1), d(A1,B2), d(A1,B3), ...
         d(A2,B1), d(A2,B2), d(A2,B3), ...
         """ 
-        for i in tqdm(range(len(A)), leave=False):
+        pbarA = range(len(A))
+        if verbose:
+            pbarA = tqdm(pbarA, leave=False)
+        for i in pbarA:
+            if i % (len(pbarA) // 5) == 0 and i != 0:
+                print(f"Computing {i} CD finished.")
             batchA = nputil.np2th(A[i:i+1]).repeat(batch_size, 1, 1).to(device) #[batch_size,M,D]
             
-            pbar = tqdm(range(num_batches_B), leave=False)
-            for j in pbar:
+            pbarB = range(num_batches_B)
+            if verbose:
+                pbarB = tqdm(pbarB, leave=False)
+            for j in pbarB:
                 b_sidx = j * batch_size
                 b_eidx = b_sidx + batch_size
                 batchB = nputil.np2th(B[b_sidx:b_eidx]).to(device)
@@ -129,38 +140,10 @@ class Evaluator:
                 batchcd = (p3d_chamfer_distance(batchA, batchB, batch_reduction=None, point_reduction="mean")[0].cpu().numpy())
                 # print(b_sidx, b_eidx, batchB.shape, dist_mat[i,b_sidx:b_eidx].shape, batchcd.shape, batchcd[b_sidx:b_eidx].shape)
                 dist_mat[i,b_sidx:b_eidx] = batchcd[:original_num_B]
-                pbar.set_description(f"Dist: {batchcd[:original_num_B].mean()}")
+                if verbose:
+                    pbarB.set_description(f"Dist: {batchcd[:original_num_B].mean()}")
                 batchB = None
                 # sysutil.clean_gpu()
-
-        # for i in (range(num_batches_A)):
-            # a_sidx = i * batch_size
-            # a_eidx = a_sidx + batch_size
-            # batchA = nputil.np2th(A[a_sidx:a_eidx]).to(device)
-            # if len(batchA) < batch_size:
-                # padding_size = batch_size - len(batchA)
-                # batchA = torch.cat([batchA, torch.zeros(padding_size, *batchA.shape[1:]).float().to(device)], 0)
-            # for j in tqdm(range(num_batches_B)):
-                # b_sidx = j * batch_size
-                # b_eidx = b_sidx + batch_size
-                # batchB = nputil.np2th(B[b_sidx:b_eidx]).to(device)
-                # if len(batchB) < batch_size:
-                    # padding_size = batch_size - len(batchB)
-                    # batchB = torch.cat([batchB, torch.zeros(padding_size, *batchB.shape[1:]).float().to(device)], 0)
-
-
-                # batchcd = (
-                    # p3d_chamfer_distance(
-                        # batchA, batchB, batch_reduction=None, point_reduction="mean"
-                    # )[0]
-                    # .cpu()
-                    # .numpy()
-                # )
-                # print(batchcd.shape)
-                # dist_mat[a_sidx, b_sidx:b_eidx] = batchcd[a_sidx:a_eidx, b_sidx:b_eidx]
-
-                # batchB = None
-                # sysutil.clean_gpu()  # for GPU memory efficiency.
 
         return dist_mat
 
