@@ -155,17 +155,19 @@ class Evaluator:
         """
         Input:
             Mxy: [N1, N2] np.ndarray or torch.Tensor
-            x and y should be prediction and ground truth, respectively.
+            x and y should be ground truth and prediction, respectively.
         Output:
             dict=(MMD: float, COV: float)
         """
         Mxy = nputil.np2th(Mxy).to(device)
-        N_pred, N_gt = Mxy.shape[:2]
-        min_val_fromsmp, min_idx = torch.min(Mxy, dim=1) # min dist for each prediction
-        min_val, _ = torch.min(Mxy, dim=0) # min dist for each GT
+        N_gt, N_pred = Mxy.shape[:2]
+        
+        min_val_fromsmp, min_idx_fromsmp = torch.min(Mxy, dim=0) # sample -> GT
+        min_val, _ = torch.min(Mxy, dim=1) # GT -> sample
+
         mmd = min_val.mean()
-        mmd_smp = min_val_fromsmp.mean()
-        cov = float(min_idx.unique().view(-1).size(0)) / float(N_gt)
+        cov = float(min_idx_fromsmp.unique().view(-1).size(0)) / float(N_gt)
+
         return {
                 "MMD-CD": mmd.item(),
                 "COV-CD": cov,
