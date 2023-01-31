@@ -1,1 +1,2 @@
 ./eval3d/emd_imp/
+git+https://github.com/63days/jutils.git
