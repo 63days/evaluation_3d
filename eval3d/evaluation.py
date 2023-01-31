@@ -15,9 +15,11 @@ jutils: https://github.com/63days/jutils
 """
 from jutils import nputil, thutil, sysutil
 
+from eval3d import emdModule
+
 
 class Evaluator:
-    def __init__(self, gt_set=None, pred_set=None, batch_size=64, device="cuda:0"):
+    def __init__(self, gt_set=None, pred_set=None, batch_size=64, device="cuda:0", metric="chamfer"):
         """
         gt_set: [num_gt, num_points, dim]
         pred_set: [num_pred, num_points, dim]
@@ -28,6 +30,9 @@ class Evaluator:
         self.pred_set = pred_set
         self.batch_size = batch_size  # when measuring distances.
         self.device = device
+        self.metric = metric
+        assert metric in ["chamfer", "l2", "emd"], f"metric should be chamfer, l2 or emd. Input: {metric}."
+        print(f"[!] Evaluator metric is defined as {metric}.")
         
         if gt_set is not None:
             self.update_gt(gt_set)
@@ -35,6 +40,15 @@ class Evaluator:
             self.update_pred(pred_set)
         if gt_set is not None and pred_set is not None:
             self.check_data()
+    def compute_pairwise_distance(self, A, B, batch_size=None, device=None, verbose=False):
+        if self.metric == "chamfer":
+            return self.compute_chamfer_distance(A, B, batch_size=batch_size, device=device, verbose=verbose)
+        elif self.metric == "l2":
+            return self.compute_l2_distance(A, B)
+        elif self.metric == "emd":
+            return self.compute_earth_movers_distance(A,B, batch_size=batch_size, device=device, verbose=verbose)
+        else:
+            raise AssertionError()
 
     def update_gt(self, gt):
         self.gt_set = gt
@@ -59,22 +73,22 @@ class Evaluator:
     def compute_all_metrics(self, gt_set=None, pred_set=None, batch_size=None, device=None, verbose=False, return_distance_matrix=False):
         """
         Output:
-            MMD-CD
-            COV-CD
-            1-NNA-CD
+            MMD-{metric}
+            COV-{metric}
+            1-NNA-{metric}
         """
         results = {}
 
         gt_set = gt_set if gt_set is not None else self.gt_set
         pred_set = pred_set if pred_set is not None else self.pred_set
 
-        Mxy = self.compute_chamfer_distance(gt_set, pred_set, batch_size, device, verbose=verbose)
+        Mxy = self.compute_pairwise_distance(gt_set, pred_set, batch_size, device, verbose)
         if verbose:
             print("[*] Finished computing (pred, gt) distance")
-        Mxx = self.compute_chamfer_distance(gt_set, gt_set, batch_size, device, verbose=verbose)
+        Mxx = self.compute_pairwise_distance(gt_set, gt_set, batch_size, device, verbose)
         if verbose:
             print("[*] Finished computing (gt, gt) distance")
-        Myy = self.compute_chamfer_distance(pred_set, pred_set, batch_size, device, verbose=verbose)
+        Myy = self.compute_pairwise_distance(pred_set, pred_set, batch_size, device, verbose)
         if verbose:
             print("[*] Finished computing (pred, pred) distance")
         
@@ -85,9 +99,9 @@ class Evaluator:
         results.update(out) # mmd and coverage
         
         nna_1 = self.compute_1_nna(Mxx, Mxy, Myy)
-        results["1-NNA-CD"] = nna_1
+        results[f"1-NNA-{self.metric}"] = nna_1
         if verbose:
-            print("1-NNA-CD:", nna_1)
+            print(f"1-NNA-{self.metric}:", nna_1)
 
         if return_distance_matrix:
             results["distance_matrix_xx"] = Mxx
@@ -138,7 +152,6 @@ class Evaluator:
                     batchB = torch.cat([batchB, torch.zeros(padding_size, *batchB.shape[1:]).float().to(device)], 0)
 
                 batchcd = (p3d_chamfer_distance(batchA, batchB, batch_reduction=None, point_reduction="mean")[0].cpu().numpy())
-                # print(b_sidx, b_eidx, batchB.shape, dist_mat[i,b_sidx:b_eidx].shape, batchcd.shape, batchcd[b_sidx:b_eidx].shape)
                 dist_mat[i,b_sidx:b_eidx] = batchcd[:original_num_B]
                 if verbose:
                     pbarB.set_description(f"Dist: {batchcd[:original_num_B].mean()}")
@@ -147,18 +160,88 @@ class Evaluator:
 
         return dist_mat
 
-    def compute_earth_movers_distance(self, A, B, _batch_size=None, _device=None):
-        # TODO: Implement it.
-        print("Not implemented yet.")
-    
-    def compute_mmd_and_coverage(self, Mxy, device=None):
+    def compute_earth_movers_distance(self, A, B, batch_size=None, device=None, verbose=False):
         """
         Input:
-            Mxy: [N1, N2] np.ndarray or torch.Tensor
+            A: np.ndarray or torch.Tensor [N1,M,D]
+            B: np.ndarray or torch.Tensor [N2,M,D]
+            _batch_size: int (Optional)
+        Output:
+            dist_mat: np.ndarray [N1,N2]
+        """
+        emd = emdModule()
+        N1, N2 = len(A), len(B)
+        dist_mat = np.zeros((N1, N2))
+        batch_size = int(batch_size) if batch_size is not None else self.batch_size
+        device = device if device is not None else self.device
+
+        compute_num_batches = lambda num: int(np.ceil(num / batch_size))
+
+        num_batches_B = compute_num_batches(N2)
+        """
+        d(A1,B1), d(A1,B2), d(A1,B3), ...
+        d(A2,B1), d(A2,B2), d(A2,B3), ...
+        """ 
+        pbarA = range(len(A))
+        if verbose:
+            pbarA = tqdm(pbarA, leave=False)
+        for i in pbarA:
+            if len(pbarA) // 5 != 0:
+                if i % (len(pbarA) // 5) == 0 and i != 0:
+                    print(f"Computing {i} EMD finished.")
+            batchA = nputil.np2th(A[i:i+1]).repeat(batch_size, 1, 1).to(device) #[batch_size,M,D]
+            
+            pbarB = range(num_batches_B)
+            if verbose:
+                pbarB = tqdm(pbarB, leave=False)
+            for j in pbarB:
+                b_sidx = j * batch_size
+                b_eidx = b_sidx + batch_size
+                batchB = nputil.np2th(B[b_sidx:b_eidx]).to(device)
+                original_num_B = len(batchB)
+                if len(batchB) < batch_size:
+                    padding_size = batch_size - len(batchB)
+                    batchB = torch.cat([batchB, torch.zeros(padding_size, *batchB.shape[1:]).float().to(device)], 0)
+
+                dis, assignment = emd(batchA, batchB, 0.05, 3000)
+                batch_emd = np.sqrt(thutil.th2np(dis)).mean(-1)
+                dist_mat[i,b_sidx:b_eidx] = batch_emd[:original_num_B]
+                if verbose:
+                    pbarB.set_description(f"Dist: {batch_emd[:original_num_B].mean()}")
+                batchB = None
+                # sysutil.clean_gpu()
+
+        return dist_mat
+   
+    def compute_l2_distance(self, A, B):
+        """
+        Input:
+            A: np.ndarray or torch.Tensor [N1,M,D]
+            B: np.ndarray or torch.Tensor [N2,M,D]
+        Output:
+            dist_mat: np.ndarray [N1,N2]
+        """
+        A = nputil.np2th(A)
+        B = nputil.np2th(B)
+        N1, M, D = A.shape
+        N2 = B.shape[0]
+
+        A = A.reshape(N1, M*D).unsqueeze(1) #[N1,1,H]
+        B = B.reshape(N2, M*D).unsqueeze(0) #[1,N2,H]
+
+        dist_mat = (A-B).norm(dim=-1) #[N1,N2]
+        dist_mat = thutil.th2np(dist_mat)
+        return dist_mat
+        
+    def compute_mmd_and_coverage(self, M_gt_pred, device=None):
+        """
+        Input:
+            M_gt_pred: [N1, N2] np.ndarray or torch.Tensor
             x and y should be ground truth and prediction, respectively.
         Output:
             dict=(MMD: float, COV: float)
         """
+        Mxy = M_gt_pred
         Mxy = nputil.np2th(Mxy).to(device)
         N_gt, N_pred = Mxy.shape[:2]
         
@@ -169,8 +252,8 @@ class Evaluator:
         cov = float(min_idx_fromsmp.unique().view(-1).size(0)) / float(N_gt)
 
         return {
-                "MMD-CD": mmd.item(),
-                "COV-CD": cov,
+                f"MMD-{self.metric}": mmd.item(),
+                f"COV-{self.metric}": cov,
                 }
 
     def compute_1_nna(self, Mxx, Mxy, Myy):
@@ -237,9 +320,11 @@ class Evaluator:
 
 
 if __name__ == "__main__":
-    dummy_gt = torch.randn([512, 16,3])
-    dummy_pred = torch.randn([512, 16,3])
+    dummy_gt = torch.randn([256, 2048,3]) # please normalize point cloud to [0, 1]
+    dummy_pred = torch.randn([256, 2048,3])
 
-    evaluator = Evaluator(dummy_gt, dummy_pred, 128, device="cuda:0")
+    evaluator = Evaluator(dummy_gt, dummy_pred, 128, device="cuda:0", metric="emd")
+    evaluator.compute_all_metrics(verbose=True)
 
+    evaluator = Evaluator(dummy_gt, dummy_pred, 128, device="cuda:0", metric="l2")
     evaluator.compute_all_metrics(verbose=True)
