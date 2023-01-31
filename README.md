@@ -12,15 +12,17 @@ pip install -e .
 ```python3
 from eval3d import emdModule, Evaluator
 
-emd = emdModule()
-evaluator = Evaluator()
+"""
+Two point clouds should have same size and be normalized to [0,1].
+The number of points should be a multiple of 1024.
+The batch size should be no greater than 512.
+"""
+dummy_gt = torch.randn([32, 1024, 3])  
+dummy_pred = torch.randn([32, 1024, 3])
 
-x = torch.rand(2,2048,3).cuda()
-y = torch.rand(2,2048,3).cuda()
+evaluator = Evaluator(dummy_gt, dummy_pred, 128, device="cuda:0", metric="emd")
+evaluator.compute_all_metrics(verbose=True)
 
-
-dist, assignment = emd(x, y, 0.005, 50)
-print(f"EMD: {dist}")
-
-evaluator.compute_all_metrics(x, y)
+evaluator = Evaluator(dummy_gt, dummy_pred, 128, device="cuda:0", metric="l2")
+evaluator.compute_all_metrics(verbose=True, compute_jsd_together=False)
 ```
