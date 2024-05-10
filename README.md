@@ -1,6 +1,8 @@
 # CUDA-Level 3D Evaluation Script
 The code computes MMD, COV and 1-NNA based on Chamfer Distance (CD) and Earth Mover's Distance (EMD).
 
+Tested with torch < 2.0.0 versions.
+
 ## Compile
 ```
 cd PyTorchEMD
